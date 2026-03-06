@@ -1,8 +1,5 @@
 const supabase = require('../supabaseClient');
 
-// ─────────────────────────────────────────────
-// GET /api/feed
-// ─────────────────────────────────────────────
 exports.obtenerFeed = async (req, res) => {
   const pagina = parseInt(req.query.pagina) || 1;
   const limite = parseInt(req.query.limite) || 10;
@@ -18,7 +15,7 @@ exports.obtenerFeed = async (req, res) => {
     let query = supabase
       .from('publicaciones')
       .select(`
-        id, titulo, descripcion, imagen_url, fecha_creacion, tipo,
+        id, titulo, descripcion, imagen_url, fecha_creacion, tipo, categoria,
         ongs ( id, nombre ),
         metas ( monto_objetivo, monto_actual ),
         likes_publicacion ( id ),
@@ -32,34 +29,41 @@ exports.obtenerFeed = async (req, res) => {
     const { data, error } = await query;
     if (error) throw error;
 
-    const publicaciones = data.map(p => ({
-      id: p.id,
-      titulo: p.titulo,
-      descripcion: p.descripcion,
-      imagen_url: p.imagen_url,
-      fecha_creacion: p.fecha_creacion,
-      tipo: p.tipo,
-      ong_id: p.ongs?.id,
-      ong_nombre: p.ongs?.nombre,
-      monto_objetivo: p.metas?.monto_objetivo,
-      monto_actual: p.metas?.monto_actual,
-      porcentaje: p.metas?.monto_objetivo
-        ? Math.round((p.metas.monto_actual / p.metas.monto_objetivo) * 10000) / 100
-        : 0,
-      total_likes: p.likes_publicacion?.length || 0,
-      total_comentarios: p.comentarios?.length || 0,
-    }));
+    const publicaciones = data.map(p => {
+      const meta = Array.isArray(p.metas) ? p.metas[0] : p.metas;
 
-    res.json({ pagina, limite, total, totalPaginas: Math.ceil(total / limite), publicaciones });
+      return {
+        id: p.id,
+        titulo: p.titulo,
+        descripcion: p.descripcion,
+        imagen_url: p.imagen_url,
+        fecha_creacion: p.fecha_creacion,
+        tipo: p.tipo,
+        categoria: p.categoria,
+        ong_id: p.ongs?.id,
+        ong_nombre: p.ongs?.nombre,
+        monto_objetivo: meta?.monto_objetivo ?? 0,
+        monto_actual: meta?.monto_actual ?? 0,
+        porcentaje: meta?.monto_objetivo
+          ? Math.round((meta.monto_actual / meta.monto_objetivo) * 10000) / 100
+          : 0,
+        total_likes: p.likes_publicacion?.length || 0,
+        total_comentarios: p.comentarios?.length || 0,
+      };
+    });
+
+    // Elimina duplicados por id por si acaso
+    const sinDuplicados = publicaciones.filter(
+      (pub, index, self) => index === self.findIndex(p => p.id === pub.id)
+    );
+
+    res.json({ pagina, limite, total, totalPaginas: Math.ceil(total / limite), publicaciones: sinDuplicados });
   } catch (error) {
     console.error('Error obtenerFeed:', error);
     res.status(500).json({ mensaje: 'Error al obtener el feed' });
   }
 };
 
-// ─────────────────────────────────────────────
-// GET /api/feed/recaudaciones
-// ─────────────────────────────────────────────
 exports.obtenerRecaudaciones = async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -87,14 +91,11 @@ exports.obtenerRecaudaciones = async (req, res) => {
   }
 };
 
-// ─────────────────────────────────────────────
-// POST /api/feed
-// ─────────────────────────────────────────────
 exports.crearPublicacion = async (req, res) => {
-  const { ong_id, meta_id, titulo, descripcion, imagen_url, tipo } = req.body;
+  const { ong_id, meta_id, titulo, descripcion, imagen_url, tipo, categoria } = req.body;
 
   if (!ong_id || !meta_id || !titulo || !descripcion) {
-    return res.status(400).json({ mensaje: 'Faltan campos obligatorios: ong_id, meta_id, titulo, descripcion' });
+    return res.status(400).json({ mensaje: 'Faltan campos obligatorios' });
   }
 
   const tiposValidos = ['actualizacion', 'recaudacion', 'urgente'];
@@ -103,7 +104,7 @@ exports.crearPublicacion = async (req, res) => {
   try {
     const { data: publicacion, error } = await supabase
       .from('publicaciones')
-      .insert([{ ong_id, meta_id, titulo, descripcion, imagen_url: imagen_url || null, tipo: tipoFinal }])
+      .insert([{ ong_id, meta_id, titulo, descripcion, imagen_url: imagen_url || null, tipo: tipoFinal, categoria: categoria || null }])
       .select()
       .single();
 
@@ -128,20 +129,13 @@ exports.crearPublicacion = async (req, res) => {
       if (notifError) throw notifError;
     }
 
-    res.status(201).json({
-      mensaje: 'Publicación creada exitosamente',
-      publicacion,
-      suscriptoresNotificados: suscriptores.length,
-    });
+    res.status(201).json({ mensaje: 'Publicación creada exitosamente', publicacion, suscriptoresNotificados: suscriptores.length });
   } catch (error) {
     console.error('Error crearPublicacion:', error);
     res.status(500).json({ mensaje: 'Error al crear la publicación' });
   }
 };
 
-// ─────────────────────────────────────────────
-// POST /api/feed/:id/like
-// ─────────────────────────────────────────────
 exports.darLike = async (req, res) => {
   const { id } = req.params;
   const { usuario_id } = req.body;
@@ -167,9 +161,6 @@ exports.darLike = async (req, res) => {
   }
 };
 
-// ─────────────────────────────────────────────
-// POST /api/feed/:id/comentario
-// ─────────────────────────────────────────────
 exports.comentar = async (req, res) => {
   const { id } = req.params;
   const { usuario_id, comentario } = req.body;
@@ -192,9 +183,6 @@ exports.comentar = async (req, res) => {
   }
 };
 
-// ─────────────────────────────────────────────
-// GET /api/feed/:id/comentarios
-// ─────────────────────────────────────────────
 exports.verComentarios = async (req, res) => {
   const { id } = req.params;
 
@@ -214,9 +202,6 @@ exports.verComentarios = async (req, res) => {
   }
 };
 
-// ─────────────────────────────────────────────
-// POST /api/feed/suscribir
-// ─────────────────────────────────────────────
 exports.suscribirse = async (req, res) => {
   const { usuario_id, ong_id } = req.body;
 
@@ -236,9 +221,6 @@ exports.suscribirse = async (req, res) => {
   }
 };
 
-// ─────────────────────────────────────────────
-// DELETE /api/feed/suscribir
-// ─────────────────────────────────────────────
 exports.cancelarSuscripcion = async (req, res) => {
   const { usuario_id, ong_id } = req.body;
 
@@ -260,9 +242,6 @@ exports.cancelarSuscripcion = async (req, res) => {
   }
 };
 
-// ─────────────────────────────────────────────
-// GET /api/feed/notificaciones/:usuario_id
-// ─────────────────────────────────────────────
 exports.obtenerNotificaciones = async (req, res) => {
   const { usuario_id } = req.params;
 
@@ -291,9 +270,6 @@ exports.obtenerNotificaciones = async (req, res) => {
   }
 };
 
-// ─────────────────────────────────────────────
-// PATCH /api/feed/notificaciones/:notificacion_id/leer
-// ─────────────────────────────────────────────
 exports.marcarLeida = async (req, res) => {
   const { notificacion_id } = req.params;
 
